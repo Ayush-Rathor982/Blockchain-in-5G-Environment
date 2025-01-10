@@ -1,0 +1,42 @@
+contract smart_contract {
+	mapping(address => uint) public balances;
+	address public owner;
+
+	constructor() {
+    	owner = msg.sender;
+	}
+
+	function deposit() public payable {
+    	balances[msg.sender] += msg.value;
+	}
+
+
+	function withdraw(uint amount) public {
+    	require(balances[msg.sender] >= amount, "Insufficient balance");
+    	balances[msg.sender] -= amount;
+    	(bool success, ) = msg.sender.call{value: amount}("");
+    	require(success, "Transfer failed");
+	}
+
+
+	function transferOwnership(address newOwner) public {
+    	require(msg.sender == owner, "Only the owner can transfer ownership");
+    	owner = newOwner;
+	}
+
+	// This function is vulnerable to integer overflow
+	function vulnerableFunction(uint256 amount) public returns (bool) {
+    	balances[msg.sender] += amount;
+    	return true;
+	}
+
+	// This function has a missing input validation check
+	function uncheckedInput(uint256 amount) public {
+    	balances[msg.sender] += amount;
+	}
+
+	// This function has a timestamp dependency
+	function timestampDependency(uint256 deadline) public view returns (bool) {
+    	return block.timestamp < deadline;
+	}
+}
