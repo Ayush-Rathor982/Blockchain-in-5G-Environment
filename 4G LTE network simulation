@@ -1,0 +1,170 @@
+#include "ns3/core-module.h"
+#include "ns3/network-module.h"
+#include "ns3/internet-module.h"
+#include "ns3/mobility-module.h"
+#include "ns3/lte-module.h"
+#include "ns3/lte-module.h"
+#include "ns3/flow-monitor-module.h"
+#include "ns3/applications-module.h"
+#include "ns3/point-to-point-module.h"
+#include "ns3/config-store-module.h"
+#include "ns3/netanim-module.h"
+using namespace ns3;
+
+int main (int argc, char *argv[])
+{
+  CommandLine cmd;
+ 
+  LogComponentEnable ("UdpEchoClientApplication", LOG_LEVEL_INFO);
+  LogComponentEnable ("UdpEchoServerApplication", LOG_LEVEL_INFO);
+
+  Ptr<LteHelper> lteHelper = CreateObject<LteHelper> ();
+
+  //This will instantiate some common objects (e.g., the Channel object) and provide the methods to add eNBs and UEs and configure them.
+
+  Ptr<PointToPointEpcHelper> epcHelper = CreateObject<PointToPointEpcHelper>();
+  lteHelper->SetEpcHelper(epcHelper);
+
+  Config::SetDefault ("ns3::UdpClient::Interval", TimeValue (MilliSeconds (1000)));
+  Config::SetDefault ("ns3::UdpClient::MaxPackets", UintegerValue (1000000));
+  Config::SetDefault ("ns3::LteHelper::UseIdealRrc", BooleanValue (false));
+
+  Ptr<Node> pgw = epcHelper->GetPgwNode();
+
+
+  // Create a single RemoteHost
+  NodeContainer remoteHostContainer;
+  remoteHostContainer.Create(1);
+  Ptr<Node> remoteHost = remoteHostContainer.Get(0);
+  InternetStackHelper internet;
+  internet.Install(remoteHostContainer);
+
+  // Create the internet
+  PointToPointHelper p2ph;
+  p2ph.SetDeviceAttribute("DataRate", DataRateValue(DataRate("100Gb/s")));
+  p2ph.SetDeviceAttribute("Mtu", UintegerValue(1500));
+  p2ph.SetChannelAttribute("Delay", TimeValue(Seconds(0.010)));
+  NetDeviceContainer internetDevices = p2ph.Install(pgw, remoteHost);
+  Ipv4AddressHelper ipv4h;
+  ipv4h.SetBase("1.0.0.0", "255.0.0.0");
+  Ipv4InterfaceContainer internetIpIfaces = ipv4h.Assign(internetDevices);
+  Ipv4StaticRoutingHelper ipv4RoutingHelper;
+  Ptr<Ipv4StaticRouting> remoteHostStaticRouting;
+  remoteHostStaticRouting =    ipv4RoutingHelper.GetStaticRouting(remoteHost->GetObject<Ipv4>());
+                                     	 
+  Ipv4Address networkAddress = Ipv4Address("1.0.0.1");                                      	 
+  Ipv4Mask subnetMask("255.255.0.0"); // Replace with the subnet mask
+  remoteHostStaticRouting->AddNetworkRouteTo(networkAddress, subnetMask, 1)
+  //Create Node objects for the eNB(s) and the UEs:
+  NodeContainer enbNodes;
+  enbNodes.Create (1);
+  NodeContainer ueNodes;
+  ueNodes.Create (5);
+
+  //Note that the above Node instances at this point still don't have an LTE protocol stack installed; they're just empty nodes.
+
+  //Configure the Mobility model for all the nodes:
+
+  MobilityHelper mobility;
+//---------Set Mobility---------------------------------
+  mobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
+  mobility.Install (enbNodes);
+  //mobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
+  mobility.SetPositionAllocator ("ns3::GridPositionAllocator",
+  "MinX", DoubleValue (0.0),
+  "MinY", DoubleValue (0.0),
+  "DeltaX", DoubleValue (5.0),
+  "DeltaY", DoubleValue (10.0),
+  "GridWidth", UintegerValue (3),
+  "LayoutType", StringValue ("RowFirst"));
+  mobility.SetMobilityModel ("ns3::RandomWalk2dMobilityModel",
+  "Bounds", RectangleValue (Rectangle (-2000, 2000, -2000, 2000)));
+  mobility.Install (ueNodes);
+
+  //Install an LTE protocol stack on the eNB(s):
+  NetDeviceContainer enbDevs;
+  enbDevs = lteHelper->InstallEnbDevice (enbNodes);
+
+  //Install an LTE protocol stack on the UEs:
+
+  NetDeviceContainer ueDevs;
+  ueDevs = lteHelper->InstallUeDevice (ueNodes);
+ 
+ 
+  // we install the IP stack on the UEs
+  internet.Install(ueNodes);
+ 
+  Ipv4InterfaceContainer ueIpIface;
+
+  // Assign IP address to UEs
+  for (uint32_t u = 0; u < ueNodes.GetN(); ++u) {
+	Ptr<Node> ue = ueNodes.Get(u);
+	Ptr<NetDevice> ueLteDevice = ueDevs.Get(u); // Assuming you have ueLteDevs container
+	Ipv4InterfaceContainer ueIpIfaceSingle = epcHelper->AssignUeIpv4Address(NetDeviceContainer(ueLteDevice));
+    
+	// set the default gateway for the UE
+	Ptr<Ipv4StaticRouting> ueStaticRouting;
+	ueStaticRouting = ipv4RoutingHelper.GetStaticRouting(ue->GetObject<Ipv4>());
+	ueStaticRouting->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
+    
+	// Store the Ipv4InterfaceContainer for later use
+	ueIpIface.Add(ueIpIfaceSingle.Get(0));
+  }
+
+  lteHelper->Attach(ueDevs, enbDevs.Get(0));
+
+  for (uint32_t u = 0; u < ueNodes.GetN(); ++u) {
+	Ipv4Address ueIpAddress = ueIpIface.GetAddress(u);
+	std::cout << "UE " << u << " IP Address: " << ueIpAddress << std::endl;
+  }
+
+ 
+ 
+  Ptr<EpcTft> tft = Create<EpcTft>();
+  EpcTft::PacketFilter pf;
+  pf.localPortStart = 1234;
+  pf.localPortEnd = 1234;
+  tft->Add(pf);
+  lteHelper->ActivateDedicatedEpsBearer(ueDevs,
+                                  	EpsBearer(EpsBearer::NGBR_VIDEO_TCP_DEFAULT),
+                                  	tft);
+                                 	                              	 
+  uint16_t dlPort = 1234;
+  PacketSinkHelper packetSinkHelper("ns3::UdpSocketFactory",
+                              	InetSocketAddress(Ipv4Address::GetAny(), dlPort));
+  ApplicationContainer serverApps = packetSinkHelper.Install(enbNodes.Get(0));
+  serverApps.Start(Seconds(0.01));
+
+
+  // Create a UdpClient application for each UE
+  for (uint32_t u = 0; u < ueNodes.GetN(); ++u) {
+	UdpClientHelper client(ueIpIface.GetAddress(u), dlPort);
+	ApplicationContainer clientApp = client.Install(enbNodes.Get(0));
+	clientApp.Start(Seconds(0.01));
+  }
+
+  //Set the stop time
+  Simulator::Stop (Seconds (20));
+
+///This is needed otherwise the simulation will last forever, because (among others) the start-of-subframe event is scheduled repeatedly, and the ns-3 simulator scheduler will hence never run out of events.
+   lteHelper->EnablePhyTraces ();
+   lteHelper->EnableMacTraces ();
+   lteHelper->EnableRlcTraces ();
+   lteHelper->EnablePdcpTraces();
+
+	//Run the simulation:
+	AnimationInterface anim ("lte.xml");
+
+	// Set the positions of nodes in the animation
+	anim.SetConstantPosition(ueNodes.Get(0), 0.0, 100.0, 0); // UE 0
+	anim.SetConstantPosition(ueNodes.Get(1), 0.0, 150.0, 0);
+	anim.SetConstantPosition(enbNodes.Get(0), 100.0, 0.0, 0); // eNodeB
+	anim.SetConstantPosition(remoteHost, 200.0, 0.0, 0); // Remote Host
+	anim.SetMobilityPollInterval(Seconds(1.00));
+	anim.SetMaxPktsPerTraceFile (100000000000);
+	anim.EnablePacketMetadata(true);
+
+  Simulator::Run ();
+  Simulator::Destroy ();
+  return 0;
+}
